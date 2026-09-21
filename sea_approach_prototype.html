@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<title>SEA Approach Control — Prototype</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#07110d;color:#d7f5d7;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+#app{height:100%;display:flex;flex-direction:column}
+#top{height:48px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:#0b1712;border-bottom:1px solid #31583d;box-sizing:border-box}
+#title{font-weight:700;letter-spacing:.4px} #score{font-size:13px}
+#radarWrap{position:relative;flex:1;min-height:0}
+canvas{width:100%;height:100%;display:block;touch-action:none}
+#panel{height:205px;background:#0b1712;border-top:1px solid #31583d;padding:8px;box-sizing:border-box}
+#selected{height:27px;display:flex;justify-content:space-between;font-size:13px}
+.controls{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:5px}
+button{background:#12251a;color:#d7f5d7;border:1px solid #396844;border-radius:6px;padding:11px 4px;font:inherit;font-size:12px;min-height:42px}
+button:active{background:#21472c}
+.small{font-size:11px;color:#92b89a}
+#log{position:absolute;left:10px;top:10px;font-size:11px;line-height:1.4;pointer-events:none;text-shadow:0 1px 2px #000}
+.bad{color:#ff9b9b}.ok{color:#a9e8ad}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="top"><div id="title">SEA APPROACH • TRAINING</div><div id="score">Score 1000</div></div>
+  <div id="radarWrap"><canvas id="radar"></canvas><div id="log"></div></div>
+  <div id="panel">
+    <div id="selected"><span id="selText">Tap an aircraft</span><span class="small">Touch controls</span></div>
+    <div class="controls">
+      <button onclick="cmd('hdg',210)">HDG 210</button><button onclick="cmd('hdg',240)">HDG 240</button><button onclick="cmd('hdg',270)">HDG 270</button><button onclick="cmd('hdg',300)">HDG 300</button>
+      <button onclick="cmd('alt',2000)">2,000 FT</button><button onclick="cmd('alt',3000)">3,000 FT</button><button onclick="cmd('alt',4000)">4,000 FT</button><button onclick="cmd('alt',5000)">5,000 FT</button>
+      <button onclick="cmd('spd',160)">160 KTS</button><button onclick="cmd('spd',180)">180 KTS</button><button onclick="cmd('spd',200)">200 KTS</button><button onclick="cmd('app',1)">ILS 16L</button>
+    </div>
+    <div class="small" style="margin-top:7px">Prototype: simplified physics and separation logic. Not for operational ATC use.</div>
+  </div>
+</div>
+<script>
+const c=document.getElementById('radar'),ctx=c.getContext('2d'),wrap=document.getElementById('radarWrap');
+let W,H,dpr,selected=null,score=1000,last=performance.now(),msg='',msgT=0;
+const runways=[
+ {name:'16L',a:155},{name:'16C',a:155},{name:'16R',a:155},
+ {name:'34L',a:335},{name:'34C',a:335},{name:'34R',a:335}
+];
+const ac=[
+ {id:'ASA452',type:'B739',x:.18,y:.20,hdg:105,alt:6000,spd:210,targetAlt:6000,targetHdg:105,targetSpd:210,trail:[]},
+ {id:'DAL183',type:'A321',x:.82,y:.25,hdg:250,alt:5000,spd:190,targetAlt:5000,targetHdg:250,targetSpd:190,trail:[]},
+ {id:'UAL721',type:'B738',x:.75,y:.72,hdg:315,alt:4000,spd:180,targetAlt:4000,targetHdg:315,targetSpd:180,trail:[]},
+ {id:'ASA611',type:'B739',x:.27,y:.73,hdg:40,alt:3000,spd:170,targetAlt:3000,targetHdg:40,targetSpd:170,trail:[]},
+ {id:'SWA228',type:'B38M',x:.50,y:.13,hdg:180,alt:7000,spd:220,targetAlt:7000,targetHdg:180,targetSpd:220,trail:[]},
+ {id:'ASA904',type:'B738',x:.12,y:.58,hdg:70,alt:5000,spd:200,targetAlt:5000,targetHdg:70,targetSpd:200,trail:[]}
+];
+function resize(){dpr=devicePixelRatio||1; W=wrap.clientWidth;H=wrap.clientHeight;c.width=W*dpr;c.height=H*dpr;ctx.setTransform(dpr,0,0,dpr,0,0)} addEventListener('resize',resize);resize();
+function xy(x,y){return [x*W,y*H]}
+function norm(a){return (a%360+360)%360}
+function turn(cur,t,rate){let d=((t-cur+540)%360)-180;return Math.abs(d)<=rate?t:norm(cur+Math.sign(d)*rate)}
+function log(s,bad=false){msg=s;msgT=3;document.getElementById('log').innerHTML='<span class="'+(bad?'bad':'ok')+'">'+s+'</span>'}
+function cmd(kind,val){
+ if(!selected){log('SELECT AN AIRCRAFT',true);return}
+ if(kind==='hdg')selected.targetHdg=val;
+ if(kind==='alt')selected.targetAlt=val;
+ if(kind==='spd')selected.targetSpd=val;
+ if(kind==='app'){selected.targetHdg=155;selected.targetAlt=2000;selected.targetSpd=150;selected.app=true}
+ log(selected.id+' '+(kind==='hdg'?'HDG '+val:kind==='alt'?'DESCEND '+val:kind==='spd'?'SPEED '+val:'CLEARED ILS 16L'));
+}
+function draw(){
+ ctx.clearRect(0,0,W,H);ctx.fillStyle='#07110d';ctx.fillRect(0,0,W,H);
+ const cx=W/2,cy=H/2,r=Math.min(W,H)*.43;
+ ctx.strokeStyle='#173c27';ctx.lineWidth=1;
+ for(let q=1;q<=4;q++){ctx.beginPath();ctx.arc(cx,cy,r*q/4,0,Math.PI*2);ctx.stroke()}
+ for(let a=0;a<Math.PI*2;a+=Math.PI/4){ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(cx+Math.cos(a)*r,cy+Math.sin(a)*r);ctx.stroke()}
+ ctx.fillStyle='#78d68a';ctx.font='12px ui-monospace';
+ ctx.fillText('N',cx-4,cy-r-8);ctx.fillText('SEA',cx-12,cy+4);
+ // simplified runway depiction
+ ctx.strokeStyle='#6e8e76';ctx.lineWidth=3;
+ for(let yy of [.43,.50,.57]){ctx.beginPath();ctx.moveTo(W*.47,yy*H);ctx.lineTo(W*.53,yy*H);ctx.stroke()}
+ ctx.fillStyle='#9ac6a1';ctx.font='10px ui-monospace';ctx.fillText('16L',W*.54,H*.43);ctx.fillText('16C',W*.54,H*.50);ctx.fillText('16R',W*.54,H*.57);
+ ac.forEach(a=>{
+   a.trail.forEach((p,i)=>{ctx.fillStyle='rgba(104,220,130,'+(i/a.trail.length*.25)+')';ctx.fillRect(p[0]-1,p[1]-1,2,2)});
+   const [x,y]=xy(a.x,a.y),ang=(a.hdg-90)*Math.PI/180;
+   ctx.save();ctx.translate(x,y);ctx.rotate(ang);ctx.fillStyle=a===selected?'#fff':'#a9f0b4';ctx.beginPath();ctx.moveTo(9,0);ctx.lineTo(-7,-5);ctx.lineTo(-4,0);ctx.lineTo(-7,5);ctx.closePath();ctx.fill();ctx.restore();
+   ctx.fillStyle='#b8e8bd';ctx.font='11px ui-monospace';ctx.fillText(a.id,x+11,y-10);ctx.fillText(a.alt.toLocaleString()+' / '+Math.round(a.spd),x+11,y+3);
+ });
+ if(selected){ctx.strokeStyle='#fff';ctx.beginPath();ctx.arc(selected.x*W,selected.y*H,18,0,Math.PI*2);ctx.stroke()}
+}
+function update(dt){
+ ac.forEach(a=>{
+   a.hdg=turn(a.hdg,a.targetHdg,35*dt);
+   a.alt += Math.sign(a.targetAlt-a.alt)*Math.min(Math.abs(a.targetAlt-a.alt),900*dt);
+   a.spd += Math.sign(a.targetSpd-a.spd)*Math.min(Math.abs(a.targetSpd-a.spd),12*dt);
+   const rad=a.hdg*Math.PI/180, px=a.x,py=a.y;
+   // speed scale intentionally exaggerated for playable prototype
+   const v=a.spd/4200;
+   a.x+=Math.sin(rad)*v*dt;a.y-=Math.cos(rad)*v*dt;
+   if(a.x<.02)a.x=.98;if(a.x>.98)a.x=.02;if(a.y<.04)a.y=.94;if(a.y>.94)a.y=.04;
+   const p=xy(a.x,a.y);a.trail.push(p);if(a.trail.length>35)a.trail.shift();
+ });
+ // simple proximity/separation check
+ for(let i=0;i<ac.length;i++)for(let j=i+1;j<ac.length;j++){
+   const A=ac[i],B=ac[j],dx=(A.x-B.x)*W,dy=(A.y-B.y)*H,dist=Math.hypot(dx,dy),ad=Math.abs(A.alt-B.alt);
+   if(dist<48 && ad<1000){score-=2;document.getElementById('score').textContent='Score '+score;log('SEPARATION ALERT: '+A.id+' / '+B.id,true)}
+ }
+ if(msgT>0){msgT-=dt;if(msgT<=0)document.getElementById('log').innerHTML=''}
+}
+c.addEventListener('pointerdown',e=>{
+ const rect=c.getBoundingClientRect(),mx=e.clientX-rect.left,my=e.clientY-rect.top;
+ selected=null;let best=24;
+ ac.forEach(a=>{const [x,y]=xy(a.x,a.y),d=Math.hypot(mx-x,my-y);if(d<best){best=d;selected=a}});
+ document.getElementById('selText').textContent=selected?selected.id+' • '+selected.type+' • '+selected.alt.toLocaleString()+' ft':'Tap an aircraft';
+});
+function loop(t){const dt=Math.min(.05,(t-last)/1000);last=t;update(dt);draw();requestAnimationFrame(loop)} requestAnimationFrame(loop);
+</script>
+</body>
+</html>
